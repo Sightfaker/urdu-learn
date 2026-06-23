@@ -4367,16 +4367,33 @@ const App = (function() {
     recognitionLang: 'ur',
     isSpeaking: false,
     isListening: false,
+    initRetryCount: 0,
+    maxInitRetries: 20,
+    initTimer: null,
 
     init() {
-      // 初始化 TTS
+      // 初始化 TTS - 移动端需要多次重试
       if ('speechSynthesis' in window) {
         this.loadVoices();
+        // 注册 voiceschanged 事件
         if (speechSynthesis.onvoiceschanged !== undefined) {
           speechSynthesis.onvoiceschanged = () => this.loadVoices();
         }
-        // 部分浏览器需要延迟加载
-        setTimeout(() => this.loadVoices(), 500);
+        // 移动端：强制启动语音引擎（某些浏览器需要 speak 后才能加载 voices）
+        const forceInit = () => {
+          if (this.isTTSReady) return;
+          this.initRetryCount++;
+          this.loadVoices();
+          // 如果 voices 仍为空，尝试触发引擎
+          if (!this.isTTSReady && this.initRetryCount < this.maxInitRetries) {
+            setTimeout(() => forceInit(), 300);
+          }
+        };
+        // 立即 + 延迟多次尝试
+        setTimeout(() => forceInit(), 100);
+        setTimeout(() => forceInit(), 500);
+        setTimeout(() => forceInit(), 1000);
+        setTimeout(() => forceInit(), 2000);
       }
       // 初始化语音识别 (Web Speech API)
       if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -4390,45 +4407,87 @@ const App = (function() {
       }
     },
 
+    // 强制初始化语音引擎（用于用户点击触发时）
+    forceInit() {
+      if (!('speechSynthesis' in window)) return;
+      // 移动端 Chrome/Edge：需要调用一次 speak 来唤醒引擎
+      if (!this.isTTSReady) {
+        const dummy = new SpeechSynthesisUtterance('');
+        dummy.volume = 0;
+        try { window.speechSynthesis.speak(dummy); } catch (e) {}
+        window.speechSynthesis.cancel();
+        this.loadVoices();
+      }
+      // 如果还是没有，用默认语音兜底
+      if (!this.isTTSReady && 'speechSynthesis' in window) {
+        const allVoices = window.speechSynthesis.getVoices();
+        if (allVoices && allVoices.length > 0) {
+          this.voices = allVoices;
+          this.currentVoice = allVoices[0];
+          this.isTTSReady = true;
+        } else {
+          // 有些浏览器 voices 永远为空，但仍然可以 speak（使用系统默认语音）
+          this.isTTSReady = true;
+        }
+      }
+      // 更新UI
+      if (currentScreen === 'stats') renderStats();
+      return this.isTTSReady;
+    },
+
     loadVoices() {
       if (!('speechSynthesis' in window)) return;
       const allVoices = window.speechSynthesis.getVoices();
-      if (!allVoices || allVoices.length === 0) return;
-
-      this.voices = allVoices;
-      // 查找乌尔都语语音
-      this.urduVoices = allVoices.filter(v => {
-        const lang = v.lang.toLowerCase();
-        return lang.startsWith('ur') || lang.includes('urdu') || lang === 'ur-pk';
-      });
-      // 备选：阿拉伯语、波斯语、印地语（乌尔都语与这些语言语音接近）
-      this.fallbackVoices = allVoices.filter(v => {
-        const lang = v.lang.toLowerCase();
-        return lang.startsWith('ar') || lang.startsWith('fa') || lang.startsWith('hi') || lang.startsWith('ur');
-      });
-      // 设置当前语音（优先已保存的，否则乌尔都语，否则备选，否则默认）
-      if (settings && settings.speechVoice) {
-        const saved = allVoices.find(v => v.name === settings.speechVoice);
-        if (saved) this.currentVoice = saved;
+      
+      if (allVoices && allVoices.length > 0) {
+        this.voices = allVoices;
+        // 查找乌尔都语语音
+        this.urduVoices = allVoices.filter(v => {
+          const lang = v.lang.toLowerCase();
+          return lang.startsWith('ur') || lang.includes('urdu') || lang === 'ur-pk';
+        });
+        // 备选：阿拉伯语、波斯语、印地语
+        this.fallbackVoices = allVoices.filter(v => {
+          const lang = v.lang.toLowerCase();
+          return lang.startsWith('ar') || lang.startsWith('fa') || lang.startsWith('hi') || lang.startsWith('ur');
+        });
+        // 设置当前语音（优先已保存的，否则乌尔都语，否则备选，否则默认）
+        if (settings && settings.speechVoice) {
+          const saved = allVoices.find(v => v.name === settings.speechVoice);
+          if (saved) this.currentVoice = saved;
+        }
+        if (!this.currentVoice && this.urduVoices.length > 0) {
+          this.currentVoice = this.urduVoices[0];
+        }
+        if (!this.currentVoice && this.fallbackVoices.length > 0) {
+          this.currentVoice = this.fallbackVoices[0];
+        }
+        if (!this.currentVoice) {
+          this.currentVoice = allVoices[0];
+        }
       }
-      if (!this.currentVoice && this.urduVoices.length > 0) {
-        this.currentVoice = this.urduVoices[0];
-      }
-      if (!this.currentVoice && this.fallbackVoices.length > 0) {
-        this.currentVoice = this.fallbackVoices[0];
-      }
-      if (!this.currentVoice && allVoices.length > 0) {
-        this.currentVoice = allVoices[0];
-      }
+      // 即使没有 voices，也标记为就绪（某些浏览器 voices 为空但 speak 可用）
       this.isTTSReady = true;
     },
 
     speak(text, options = {}) {
-      if (!this.isTTSReady || !settings.speechEnabled) return;
+      if (!settings.speechEnabled) return;
       if (!text || text.trim() === '') return;
-      // 清理非阿拉伯字母的干扰（如英语标签）
+      
+      // 如果引擎未就绪，尝试强制初始化
+      if (!this.isTTSReady) {
+        this.forceInit();
+      }
+      if (!('speechSynthesis' in window)) return;
+
+      // 清理非阿拉伯字母的干扰
       const cleanText = text.replace(/\([^)]*\)/g, '').trim();
       if (!cleanText) return;
+
+      // 移动端：需要恢复暂停的引擎
+      if (window.speechSynthesis.paused) {
+        try { window.speechSynthesis.resume(); } catch (e) {}
+      }
 
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(cleanText);
@@ -4439,9 +4498,16 @@ const App = (function() {
 
       utterance.onstart = () => { this.isSpeaking = true; };
       utterance.onend = () => { this.isSpeaking = false; };
-      utterance.onerror = () => { this.isSpeaking = false; };
+      utterance.onerror = (e) => { 
+        this.isSpeaking = false;
+        console.error('TTS error:', e.error);
+      };
 
-      window.speechSynthesis.speak(utterance);
+      try {
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
+        console.error('Speak failed:', e);
+      }
     },
 
     stop() {
@@ -4453,7 +4519,6 @@ const App = (function() {
     },
 
     getVoiceOptions() {
-      // 返回所有可用语音，供设置页面选择
       return this.voices.map(v => ({
         name: v.name,
         lang: v.lang,
@@ -4509,7 +4574,14 @@ const App = (function() {
     },
 
     testSpeech() {
-      this.speak('السلام علیکم');
+      // 强制初始化后播放测试语音
+      if (!this.isTTSReady) {
+        this.forceInit();
+      }
+      // 延迟确保引擎就绪
+      setTimeout(() => {
+        this.speak('السلام علیکم');
+      }, 100);
     }
   };
 
