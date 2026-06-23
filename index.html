@@ -1098,6 +1098,32 @@ input[type="range"]::-moz-range-thumb {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.05); }
 }
+/* ============================================================
+   Toast 提示样式
+   ============================================================ */
+
+.toast-msg {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(44, 44, 44, 0.92);
+  color: white;
+  padding: 12px 24px;
+  border-radius: 24px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  z-index: 9999;
+  max-width: 90%;
+  text-align: center;
+  animation: toastIn 0.3s ease;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
 
 </style>
   <!-- Preconnect for fonts if needed -->
@@ -4478,7 +4504,10 @@ const App = (function() {
       if (!this.isTTSReady) {
         this.forceInit();
       }
-      if (!('speechSynthesis' in window)) return;
+      if (!('speechSynthesis' in window)) {
+        if (typeof showToast === 'function') showToast('⚠️ 您的浏览器不支持语音朗读');
+        return;
+      }
 
       // 清理非阿拉伯字母的干扰
       const cleanText = text.replace(/\([^)]*\)/g, '').trim();
@@ -4496,10 +4525,12 @@ const App = (function() {
       utterance.pitch = options.pitch || settings.speechPitch || 1.0;
       if (this.currentVoice) utterance.voice = this.currentVoice;
 
-      utterance.onstart = () => { this.isSpeaking = true; };
+      let started = false;
+      utterance.onstart = () => { started = true; this.isSpeaking = true; };
       utterance.onend = () => { this.isSpeaking = false; };
       utterance.onerror = (e) => { 
         this.isSpeaking = false;
+        if (e.error === 'canceled' || e.error === 'interrupted') return;
         console.error('TTS error:', e.error);
       };
 
@@ -4507,7 +4538,19 @@ const App = (function() {
         window.speechSynthesis.speak(utterance);
       } catch (e) {
         console.error('Speak failed:', e);
+        if (typeof showToast === 'function') showToast('⚠️ 语音朗读启动失败');
+        return;
       }
+      
+      // 关键：1.5秒后检测是否真正开始播放
+      setTimeout(() => {
+        if (!started && !window.speechSynthesis.speaking) {
+          console.warn('TTS did not start - likely no system TTS engine');
+          if (typeof showToast === 'function') {
+            showToast('⚠️ 未检测到语音引擎，请安装 Google 文字转语音（TTS）', 4000);
+          }
+        }
+      }, 1500);
     },
 
     stop() {
@@ -4975,8 +5018,14 @@ const App = (function() {
       <div class="card">
         <div class="card-title">🔊 语音助手</div>
         <div class="card-body">
-          <p style="font-size:0.85rem;margin-bottom:10px;">
+          <p style="font-size:0.85rem;margin-bottom:8px;">
             每个闪卡都带有 🔊 朗读按钮，翻转后自动播放乌尔都语发音。
+          </p>
+          <p style="font-size:0.8rem;margin-bottom:10px;color:var(--text-muted);">
+            ${window.speechSynthesis ? '✅ 浏览器支持语音朗读' : '❌ 浏览器不支持语音朗读'}
+          </p>
+          <p style="font-size:0.8rem;margin-bottom:10px;color:var(--accent);">
+            ${window.speechSynthesis && SpeechManager.voices.length === 0 ? '⚠️ 未检测到系统语音引擎，请安装 Google 文字转语音（TTS）后重试' : ''}
           </p>
           <p style="font-size:0.85rem;margin-bottom:10px;color:var(--text-muted);">
             ${SpeechManager.isSpeechRecognitionReady ? '✅ 支持语音识别跟读练习' : '⚠️ 语音识别需要 Chrome 浏览器'}
@@ -5165,6 +5214,17 @@ const App = (function() {
   // 朗读当前项
   function speakItem(text) {
     SpeechManager.speak(text);
+  }
+
+  // Toast 提示
+  function showToast(message, duration = 2500) {
+    const existing = document.querySelector('.toast-msg');
+    if (existing) existing.remove();
+    const toast = document.createElement('div');
+    toast.className = 'toast-msg';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), duration);
   }
 
   // 跟读练习
